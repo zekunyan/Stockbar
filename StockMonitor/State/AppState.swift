@@ -9,13 +9,13 @@ final class AppState: ObservableObject {
     // MARK: - 持久化（settings.json）
 
     @Published var config: AppSettings = AppSettings() {
-        didSet { saveSettings(config) }
+        didSet { saveSettings(config); refreshStatusBarSegments() }
     }
 
     // MARK: - 持久化（stocks.json）
 
     @Published var stocks: [Stock] = [] {
-        didSet { saveStocks(stocks) }
+        didSet { saveStocks(stocks); refreshStatusBarSegments() }
     }
 
     // MARK: - 持久化（watchlists.json）
@@ -26,11 +26,18 @@ final class AppState: ObservableObject {
 
     // MARK: - 实时状态
 
-    @Published var quotes: [String: Quote]      = [:]
+    @Published var quotes: [String: Quote]      = [:] { didSet { refreshStatusBarSegments() } }
     @Published var exchangeRates: ExchangeRates = ExchangeRates()
     @Published var isLoading: Bool              = false
     @Published var lastUpdateTime: Date?        = nil
     @Published var hasError: Bool               = false
+
+    /// 状态栏展示片段（@Published，quotes/config/stocks 变化时自动更新）
+    @Published var statusBarSegments: [StatusBarSegment] = []
+    /// 当前轮播索引
+    @Published var statusBarCurrentIndex: Int = 0
+
+    private var rotationTimer: Timer?
 
     // MARK: - 文件路径
 
@@ -122,6 +129,11 @@ final class AppState: ObservableObject {
         set { config.statusBarStockId = newValue }
     }
 
+    var statusBarStockIds: [String] {
+        get { config.statusBarStockIds }
+        set { config.statusBarStockIds = newValue }
+    }
+
     var refreshInterval: Int {
         get { config.refreshInterval }
         set { config.refreshInterval = newValue }
@@ -204,8 +216,10 @@ final class AppState: ObservableObject {
                 }
             }
 
-            quotes.merge(merged) { $1 }
-            quotes.merge(h) { $1 }
+            var newQuotes = quotes
+            newQuotes.merge(merged) { $1 }
+            newQuotes.merge(h) { $1 }
+            quotes         = newQuotes   // 整体赋值，触发 didSet → refreshStatusBarSegments
             exchangeRates  = rates
             lastUpdateTime = Date()
             syncStockNamesFromQuotes()
@@ -316,6 +330,92 @@ final class AppState: ObservableObject {
     var statusBarQuote: Quote? {
         guard let s = statusBarStock else { return nil }
         return quotes[s.id]
+    }
+
+    /// 状态栏每个片段的数据（供 MenuBarLabel 渲染）
+    struct StatusBarSegment {
+        let text: String
+        let isUp: Bool
+        let isDown: Bool
+        let isSecondary: Bool   // 用于 pnl "--" 等中性色
+    }
+
+    /// 重新计算并发布 statusBarSegments（在 quotes/config/stocks 变化时调用）
+    func refreshStatusBarSegments() {
+        let ids = config.statusBarStockIds
+
+        guard !ids.isEmpty, !ids.allSatisfy({ $0 == "__none__" }) else {
+            statusBarSegments = []
+            return
+        }
+
+        var segments: [StatusBarSegment] = []
+
+        for id in ids {
+            guard id != "__none__" else { continue }
+
+            if id == "__daily_pnl__" || id == "__total_pnl__" || id == "__both_pnl__" {
+                if !hasPnLData {
+                    segments.append(StatusBarSegment(text: "--", isUp: false, isDown: false, isSecondary: true))
+                    continue
+                }
+                let sym = displayCurrency.symbol
+                var parts: [String] = []
+                if id == "__daily_pnl__" || id == "__both_pnl__" {
+                    let d = totalDailyPnL
+                    parts.append("日\(d >= 0 ? "+" : "")\(sym)\(String(format: "%.0f", d))")
+                }
+                if id == "__total_pnl__" || id == "__both_pnl__" {
+                    let p = totalPnL
+                    parts.append("浮\(p >= 0 ? "+" : "")\(sym)\(String(format: "%.0f", p))")
+                }
+                let val = (id == "__daily_pnl__") ? totalDailyPnL : totalPnL
+                segments.append(StatusBarSegment(
+                    text: parts.joined(separator: " "),
+                    isUp: val > 0, isDown: val < 0, isSecondary: false
+                ))
+                continue
+            }
+
+            // 普通股票（空串已废弃，直接按 id 查找）
+            guard !id.isEmpty else { continue }
+            guard let stock = stocks.first(where: { $0.id == id }),
+                  let q = quotes[stock.id] else { continue }
+            let s = stock
+            var parts: [String] = []
+            if config.statusBarShowName  { parts.append(s.name) }
+            if config.statusBarShowPrice { parts.append(q.formattedPrice) }
+            if config.statusBarShowChange { parts.append(q.formattedPercent) }
+            let text = parts.isEmpty ? s.name : parts.joined(separator: " ")
+            segments.append(StatusBarSegment(text: text, isUp: q.isUp, isDown: q.isDown, isSecondary: false))
+        }
+        let oldCount = statusBarSegments.count
+        statusBarSegments = segments
+
+        // 防止索引越界
+        if statusBarCurrentIndex >= segments.count {
+            statusBarCurrentIndex = 0
+        }
+        // 只有 segments 数量变化时才重建 Timer（行情价格更新不重置）
+        if segments.count != oldCount {
+            restartRotationTimer()
+        }
+    }
+
+    /// 重建轮播 Timer，使用 .common RunLoop 确保菜单打开时也能正常触发
+    func restartRotationTimer() {
+        rotationTimer?.invalidate()
+        rotationTimer = nil
+        guard statusBarSegments.count > 1 else { return }
+        let interval = TimeInterval(config.rotationInterval)
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.statusBarSegments.count > 1 else { return }
+                self.statusBarCurrentIndex = (self.statusBarCurrentIndex + 1) % self.statusBarSegments.count
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        rotationTimer = t
     }
 
     // MARK: - 颜色辅助

@@ -37,22 +37,47 @@ struct SettingsView: View {
 
                 Divider()
 
-                // 状态栏显示
+                // 状态栏显示（多选）
                 section("状态栏显示") {
-                    Picker("", selection: Binding(
-                        get: { appState.statusBarStockId },
-                        set: { appState.statusBarStockId = $0 }
-                    )) {
-                        Text("不显示").tag("__none__")
-                        Text("日盈亏").tag("__daily_pnl__")
-                        Text("总盈亏").tag("__total_pnl__")
-                        Text("日盈亏 + 总盈亏").tag("__both_pnl__")
-                        Divider()
-                        Text("（自动选第一只）").tag("")
-                        ForEach(appState.stocks) { s in
-                            Text("\(s.name)  \(s.id)").tag(s.id)
+                    statusBarMultiSelectView
+                    Divider().padding(.vertical, 2)
+                    // 显示内容控制
+                    HStack(spacing: 12) {
+                        statusBarToggle("名称", isOn: Binding(
+                            get: { appState.config.statusBarShowName },
+                            set: { appState.config.statusBarShowName = $0 }
+                        ))
+                        statusBarToggle("价格", isOn: Binding(
+                            get: { appState.config.statusBarShowPrice },
+                            set: { appState.config.statusBarShowPrice = $0 }
+                        ))
+                        statusBarToggle("涨跌", isOn: Binding(
+                            get: { appState.config.statusBarShowChange },
+                            set: { appState.config.statusBarShowChange = $0 }
+                        ))
+                    }
+                    // 多选时显示轮播间隔
+                    if appState.config.statusBarStockIds.filter({ $0 != "__none__" }).count > 1 {
+                        Divider().padding(.vertical, 2)
+                        HStack(spacing: 8) {
+                            Text("轮播间隔")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                            Picker("", selection: Binding(
+                                get: { appState.config.rotationInterval },
+                                set: {
+                                    appState.config.rotationInterval = $0
+                                    appState.restartRotationTimer()
+                                }
+                            )) {
+                                ForEach(AppSettings.validRotationIntervals, id: \.self) { s in
+                                    Text("\(s) 秒").tag(s)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
                         }
-                    }.pickerStyle(.menu)
+                    }
                 }
 
                 // 持仓股分组
@@ -61,7 +86,6 @@ struct SettingsView: View {
                         get: { appState.config.groupHoldings },
                         set: { appState.config.groupHoldings = $0 }
                     ))
-                    .padding(.leading, 8)
                 }
 
                 // 观察仓管理
@@ -75,7 +99,9 @@ struct SettingsView: View {
                         ForEach(appState.watchlists) { wl in
                             Text(wl.name).tag(wl.id)
                         }
-                    }.pickerStyle(.menu)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
 
                     // 新建
                     HStack(spacing: 6) {
@@ -90,7 +116,6 @@ struct SettingsView: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                     }
-                    .padding(.leading, 8)
 
                     // 列表（删除）
                     if !appState.watchlists.isEmpty {
@@ -125,7 +150,9 @@ struct SettingsView: View {
                         ForEach(SortRule.allCases, id: \.rawValue) { rule in
                             Text(rule.displayName).tag(rule)
                         }
-                    }.pickerStyle(.segmented)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 // 美股排序价格
@@ -137,7 +164,9 @@ struct SettingsView: View {
                         ForEach(USPriceMode.allCases, id: \.rawValue) { mode in
                             Text(mode.displayName).tag(mode)
                         }
-                    }.pickerStyle(.segmented)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 // 刷新间隔
@@ -149,7 +178,9 @@ struct SettingsView: View {
                         ForEach(AppSettings.validRefreshIntervals, id: \.self) { i in
                             Text("\(i) 秒").tag(i)
                         }
-                    }.pickerStyle(.segmented)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 // 涨跌颜色
@@ -170,7 +201,9 @@ struct SettingsView: View {
                         ForEach(DisplayCurrency.allCases, id: \.rawValue) { c in
                             Text(c.displayName).tag(c)
                         }
-                    }.pickerStyle(.segmented)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 // 开机启动
@@ -263,6 +296,127 @@ struct SettingsView: View {
 
     // MARK: - 子视图
 
+    private struct StatusBarOption: Identifiable {
+        let id: String
+        let label: String
+        var isDividerAfter: Bool = false
+    }
+
+    private var statusBarFixedOptions: [StatusBarOption] {
+        [
+            StatusBarOption(id: "__none__",      label: "不显示"),
+            StatusBarOption(id: "__daily_pnl__", label: "日盈亏"),
+            StatusBarOption(id: "__total_pnl__", label: "总盈亏"),
+            StatusBarOption(id: "__both_pnl__",  label: "日盈亏 + 总盈亏"),
+        ]
+    }
+
+    private var statusBarStockOptions: [StatusBarOption] {
+        appState.stocks.map { StatusBarOption(id: $0.id, label: "\($0.name)  \($0.id)") }
+    }
+
+    /// 状态栏多选列表：固定选项 + 股票列表（超过 3 条时滚动）
+    @ViewBuilder
+    private var statusBarMultiSelectView: some View {
+        VStack(spacing: 2) {
+            // 固定选项（不显示 / 盈亏）
+            ForEach(statusBarFixedOptions) { option in
+                statusBarOptionRow(option)
+            }
+
+            if !statusBarStockOptions.isEmpty {
+                Divider().padding(.vertical, 2)
+
+                // 股票列表：超过 3 条时固定高度可滚动
+                let stockOpts = statusBarStockOptions
+                if stockOpts.count > 3 {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 2) {
+                            ForEach(stockOpts) { option in
+                                statusBarOptionRow(option)
+                            }
+                        }
+                    }
+                    .frame(height: CGFloat(3) * 28)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                    .cornerRadius(6)
+                } else {
+                    ForEach(stockOpts) { option in
+                        statusBarOptionRow(option)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func statusBarOptionRow(_ option: StatusBarOption) -> some View {
+        let isSelected = appState.config.statusBarStockIds.contains(option.id)
+        Button {
+            toggleStatusBarOption(option.id)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13))
+                    .foregroundColor(isSelected ? .accentColor : .secondary)
+                Text(option.label)
+                    .font(.system(size: 12))
+                    .foregroundColor(.primary)
+                Spacer()
+            }
+            .padding(.vertical, 3)
+            .padding(.trailing, 4)
+            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+            .cornerRadius(4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 切换状态栏选项（互斥规则：__none__ 与其他互斥）
+    private func toggleStatusBarOption(_ id: String) {
+        var ids = appState.statusBarStockIds
+
+        if id == "__none__" {
+            // 点击「不显示」：清除所有，只保留 __none__
+            ids = ids.contains("__none__") ? [] : ["__none__"]
+        } else {
+            // 选择其他项时，移除「不显示」
+            ids.removeAll { $0 == "__none__" }
+            if let idx = ids.firstIndex(of: id) {
+                ids.remove(at: idx)
+            } else {
+                ids.append(id)
+            }
+        }
+
+        // 兜底：若全部取消，默认不显示
+        if ids.isEmpty { ids = ["__none__"] }
+        appState.statusBarStockIds = ids
+    }
+
+    /// 状态栏内容控制小 Toggle（标签+勾选框横排）
+    @ViewBuilder
+    private func statusBarToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+            appState.refreshStatusBarSegments()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13))
+                    .foregroundColor(isOn.wrappedValue ? .accentColor : .secondary)
+                Text(label)
+                    .font(.system(size: 12))
+                    .foregroundColor(.primary)
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .background(isOn.wrappedValue ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(5)
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -315,7 +469,11 @@ struct SettingsView: View {
 
             Button {
                 appState.stocks.removeAll { $0.id == stock.id }
-                if appState.statusBarStockId == stock.id { appState.statusBarStockId = "" }
+                // 从多选列表中移除该股票
+                appState.statusBarStockIds.removeAll { $0 == stock.id }
+                if appState.statusBarStockIds.isEmpty {
+                    appState.statusBarStockIds = ["__none__"]
+                }
             } label: { Image(systemName: "xmark").font(.system(size: 11)).foregroundColor(.red) }
             .buttonStyle(.plain)
         }
