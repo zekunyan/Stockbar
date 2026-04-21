@@ -97,11 +97,12 @@ struct DropdownView: View {
                     }
                 }
 
+                Spacer(minLength: 0)
                 Divider()
                 ToolbarView(showSettings: $showSettings, sortByChange: $sortByChange)
             }
         }
         .padding(6)
-        .frame(width: 320)
+        .frame(width: 320, height: 500)
     }
 }
