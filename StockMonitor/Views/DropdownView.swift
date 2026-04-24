@@ -88,11 +88,12 @@ struct DropdownView: View {
                         .frame(maxWidth: .infinity)
                         .padding()
                 } else {
-                    ZStack {
+                    ZStack(alignment: .top) {
                         stockListView
                             .opacity(selectedStock == nil ? 1 : 0)
                         if let stock = selectedStock {
                             StockChartView(stock: stock, onClose: { selectedStock = nil })
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         }
                     }
                 }

@@ -43,7 +43,7 @@ struct StockChartView: View {
             headerView
             Divider()
             chartAreaView
-                .frame(height: 200)
+                .frame(minHeight: 150, maxHeight: .infinity)
             if !isLoading && !loadFailed && !points.isEmpty {
                 statsRow
             }
